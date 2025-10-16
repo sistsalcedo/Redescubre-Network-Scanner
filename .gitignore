@@ -15,3 +15,6 @@ build/
 
 # Archivos de configuración local (si los hubiera)
 .env
+
+# Archivos de documentación interna que no deben subirse
+plan.md
