@@ -1,0 +1,3 @@
+customtkinter
+scapy
+mac-vendor-lookup
