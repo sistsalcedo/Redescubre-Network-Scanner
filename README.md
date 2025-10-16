@@ -36,6 +36,11 @@ Este proyecto fue creado como una alternativa a herramientas populares como *Adv
 
 Asegúrate de tener **Python 3.8 o superior** instalado.
 
+> **⚠️ Nota para usuarios de Windows:** Para que el escaneo de red funcione correctamente, es **necesario** instalar **Npcap**. Esta herramienta permite a Scapy capturar y enviar paquetes de red.
+>
+> - **[Descarga Npcap desde su sitio oficial](https://npcap.com/#download)**
+> - Durante la instalación, asegúrate de marcar la opción "Install Npcap in WinPcap API-compatible Mode".
+
 1.  **Clona el repositorio:**
     ```bash
     git clone https://github.com/tu-usuario/tu-repositorio.git
