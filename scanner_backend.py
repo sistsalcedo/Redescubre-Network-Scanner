@@ -49,17 +49,19 @@ def _resolve_hostname(ip_addr, update_callback):
     Función auxiliar para resolver el hostname en un hilo separado para no bloquear.
     """
     try:
+        # 1. Intento principal: DNS Inverso (rápido si funciona)
         hostname = socket.gethostbyaddr(ip_addr)[0]
     except socket.herror:
-        # Intenta identificar si es el gateway
+        # Si el DNS inverso falla, intentamos identificar si es el gateway
+        # o lo marcamos como desconocido.
         try:
             if ip_addr == conf.route.route("0.0.0.0")[2]:
                 hostname = "Gateway/Router"
             else:
                 hostname = "Desconocido"
-        except IndexError:
+        except (IndexError, OSError): # OSError puede ocurrir si no hay ruta
             hostname = "Desconocido"
-    
+
     if update_callback:
         update_callback({"ip": ip_addr, "hostname": hostname})
 
