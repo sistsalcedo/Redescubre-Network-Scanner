@@ -18,8 +18,8 @@ import webbrowser
 import tkinter as tk
 
 # Importamos las funciones que creamos en nuestro backend
-from scanner_backend import scan_network, get_default_network_range, scan_ports, setup_mac_database, get_data_directory
-from languages import LANGUAGES
+from scanner_backend import escanear_red, obtener_rango_red_por_defecto, escanear_puertos, configurar_base_de_datos_mac, get_data_directory
+from languages import LANGUAGES 
 
 class LanguageManager:
     def __init__(self, initial_language="Español"):
@@ -48,34 +48,35 @@ class App(ctk.CTk):
 
         # --- Layout de la ventana (Grid) ---
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1) # La tabla ahora está en la fila 1
+        self.grid_rowconfigure(1, weight=1)
 
         # --- Frame superior para los controles ---
         self.top_frame = ctk.CTkFrame(self, height=50)
         self.top_frame.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="ew")
-        self.top_frame.grid_columnconfigure([1, 5], weight=1) # Columnas de entrada de texto se expanden
+        self.top_frame.grid_columnconfigure(1, weight=1) # La columna de entrada de IP se expande
 
         self.label_ip = ctk.CTkLabel(self.top_frame, text=self.lang.obtener("ip_range_label"))
         self.label_ip.grid(row=0, column=0, padx=10, pady=10)
 
         self.entry_ip = ctk.CTkEntry(self.top_frame, placeholder_text=self.lang.obtener("ip_range_placeholder"))
         self.entry_ip.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-
+        
         self.scan_button = ctk.CTkButton(self.top_frame, text=self.lang.obtener("scan_button"), command=self.iniciar_hilo_escaneo)
         self.scan_button.grid(row=0, column=2, padx=(10, 5), pady=10)
 
         self.cancel_button = ctk.CTkButton(self.top_frame, text=self.lang.obtener("cancel_button"), command=self.cancelar_escaneo, state="disabled")
         self.cancel_button.grid(row=0, column=3, padx=(0, 10), pady=10)
 
+        self.top_frame.grid_columnconfigure(5, weight=1) # Columna de búsqueda se expande
         # --- Caja de búsqueda (en la misma fila) ---
         self.search_label = ctk.CTkLabel(self.top_frame, text=self.lang.obtener("search_label"))
-        self.search_label.grid(row=0, column=4, padx=(20, 10), pady=10)
+        self.search_label.grid(row=0, column=6, padx=(20, 10), pady=10)
 
         self.search_entry = ctk.CTkEntry(self.top_frame, placeholder_text=self.lang.obtener("search_placeholder"))
-        self.search_entry.grid(row=0, column=5, padx=10, pady=10, sticky="ew")
+        self.search_entry.grid(row=0, column=7, padx=10, pady=10, sticky="ew")
         self.search_entry.bind("<KeyRelease>", self.filtrar_resultados)
 
-        # --- Frame central para la tabla de resultados ---
+        # --- Frame para la tabla (ya no dentro de una pestaña) ---
         self.table_frame = ctk.CTkFrame(self)
         self.table_frame.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
         self.table_frame.grid_columnconfigure(0, weight=1)
@@ -85,14 +86,14 @@ class App(ctk.CTk):
         columns = ("Estado", "IP", "Hostname", "MAC", "Fabricante", "Visto por última vez")
         self.tree = ttk.Treeview(self.table_frame, columns=columns, show="headings")
         self.configurar_estilo_tabla()
-        
+
         # Configurar encabezados y comando de ordenamiento
         for col in columns:
             self.tree.heading(col, text=self.lang.obtener(f"col_{col.lower().replace(' ', '_')}"), command=lambda _col=col: self.ordenar_columna(_col, False))
             self.tree.column(col, width=80 if col == "Estado" else 180, anchor="center" if col in ("Estado", "IP", "MAC") else "w")
 
         self.tree.grid(row=0, column=0, sticky="nsew")
-        
+
         scrollbar = ctk.CTkScrollbar(self.table_frame, command=self.tree.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scrollbar.set)
@@ -105,6 +106,7 @@ class App(ctk.CTk):
 
         self.tree.bind("<Button-3>", self.mostrar_menu_contextual)
         self.tree.bind("<Double-1>", self.manejar_doble_clic)
+
 
         # --- Frame inferior para la barra de progreso y estado ---
         self.bottom_frame = ctk.CTkFrame(self, height=40)
@@ -129,7 +131,6 @@ class App(ctk.CTk):
         self.sort_reverse = False
         self.cancel_scan_event = threading.Event()
         self.blinking_job_id = None
-        self.blinking_active = False
 
         # --- Inicialización en segundo plano para un arranque rápido de la GUI ---
         self.iniciar_hilo_inicializacion()
@@ -145,11 +146,6 @@ class App(ctk.CTk):
         self.scan_button.configure(state="disabled")
         self.actualizar_estado(self.lang.obtener("status_initializing"))
         
-        # Detener cualquier parpadeo si el usuario inicia un escaneo
-        if self.blinking_active:
-            self.blinking_active = False
-            self.after_cancel(self.blinking_job_id) # type: ignore
-        self.status_label.configure(font=ctk.CTkFont(weight="normal"))
 
         init_thread = threading.Thread(target=self.inicializar_app_en_segundo_plano, daemon=True)
         init_thread.start()
@@ -157,11 +153,11 @@ class App(ctk.CTk):
     def inicializar_app_en_segundo_plano(self):
         """Tareas que se ejecutan en un hilo separado al inicio."""
         # 1. Cargar la base de datos de fabricantes MAC
-        self.mac_lookup_instance, status_msg = setup_mac_database()
+        self.mac_lookup_instance, status_msg = configurar_base_de_datos_mac()
         self.after(0, self.actualizar_estado, status_msg.strip())
 
         # 2. Obtener y mostrar el rango de IP por defecto
-        default_range = get_default_network_range()
+        default_range = obtener_rango_red_por_defecto()
         if default_range:
             self.after(0, lambda: self.entry_ip.insert(0, default_range))
 
@@ -181,28 +177,6 @@ class App(ctk.CTk):
         except (json.JSONDecodeError, IOError) as e:
             self.actualizar_estado(self.lang.obtener("status_history_error").format(e))
             self.device_history = {}
-
-    def parpadear_mensaje_estado(self, message, count=5):
-        """Hace que el mensaje de estado parpadee para llamar la atención."""
-        if not self.blinking_active:
-            # Si se canceló el parpadeo, restaurar y salir
-            self.status_label.configure(font=ctk.CTkFont(weight="normal"), text_color=self.label_ip.cget("text_color"))
-            self.update_status(message) # Dejar el mensaje final visible
-            if self.blinking_job_id:
-                self.after_cancel(self.blinking_job_id)
-            return
-
-        if count > 0:
-            current_font = self.status_label.cget("font")
-            if "bold" in str(current_font.cget("weight")):
-                self.status_label.configure(font=ctk.CTkFont(weight="normal"), text_color=self.label_ip.cget("text_color"))
-            else:
-                self.status_label.configure(font=ctk.CTkFont(weight="bold"), text_color="#2CC985")
-            
-            self.blinking_job_id = self.after(500, self.parpadear_mensaje_estado, message, count - 1)
-        else:
-            self.blinking_active = False
-            self.after(0, self.actualizar_estado, message) # Dejar el mensaje final visible
 
     def guardar_historial(self):
         """Guarda el historial de dispositivos en el archivo JSON."""
@@ -263,11 +237,6 @@ class App(ctk.CTk):
         self.scan_button.configure(state="disabled", text=self.lang.obtener("scan_button_scanning"))
         self.cancel_button.configure(state="normal")
         
-        # 1. Detener cualquier parpadeo y restaurar el estilo normal de la barra de estado
-        if self.blinking_active:
-            self.blinking_active = False
-            self.after_cancel(self.blinking_job_id) # type: ignore
-        self.status_label.configure(font=ctk.CTkFont(weight="normal"), text_color=self.label_ip.cget("text_color"))
         self.status_label.configure(text=self.lang.obtener("status_scanning"))
         self.progress_bar.set(0)
         
@@ -297,18 +266,16 @@ class App(ctk.CTk):
         try:
             # Pasamos la función de actualización de progreso a nuestro backend
             # y el evento de cancelación.
-            scan_network(mac_lookup_instance, ip_range, # Esta función es del backend, no se traduce
-                         progress_callback=self.actualizar_progreso,
-                         result_callback=self.agregar_dispositivo_a_tabla,
-                         update_callback=self.actualizar_dispositivo_en_tabla,
-                         cancel_event=cancel_event)
+            dispositivos_activos = escanear_red(mac_lookup_instance, ip_range,
+                                                callback_progreso=self.actualizar_progreso,
+                                                callback_resultado=self.agregar_dispositivo_a_tabla,
+                                                callback_actualizacion=self.actualizar_dispositivo_en_tabla,
+                                                evento_cancelar=cancel_event)
 
-            # Cuando scan_network termina, actualizamos el estado según si fue cancelado o no.
             online_count = sum(1 for device in self.device_history.values() if device.get("status") == "Online")
             if cancel_event.is_set():
                 self.after(0, self.actualizar_estado, self.lang.obtener("status_scan_cancelled"))
             else:
-                # Si el escaneo se completa, repoblamos la tabla para mostrar también los offline
                 self.after(0, self.poblar_tabla_desde_historial)
                 self.after(0, self.actualizar_estado, self.lang.obtener("status_scan_completed").format(online_count))
         except Exception as e:
@@ -440,6 +407,246 @@ class App(ctk.CTk):
         for device in data_to_sort:
             self.actualizar_o_insertar_dispositivo_en_tabla(device)
 
+    def dibujar_topologia(self, graph):
+        """Dibuja el grafo de la red en el canvas de topología."""
+        canvas = self.topology_canvas
+        canvas.delete("all") # Limpiar canvas anterior
+
+        # Limpiar el mapeo de aristas
+        self.edge_canvas_items.clear()
+
+        # Forzar la actualización del canvas para obtener su tamaño real
+        canvas.update_idletasks()
+
+        if not graph or graph.number_of_nodes() == 0:
+            canvas.create_text(canvas.winfo_width()/2, canvas.winfo_height()/2, text="No hay topología para mostrar", fill="white")
+            return
+
+        # Comprobar si los nodos ya tienen posiciones guardadas
+        if all('pos' in data for node, data in graph.nodes(data=True)):
+            print("[Topology] Cargando posiciones guardadas.")
+            pos = nx.get_node_attributes(graph, 'pos')
+        else:
+            # Si no, calcular un nuevo layout
+            print("[Topology] Calculando nuevo layout.")
+            try:
+                pos = nx.spring_layout(graph, seed=42, iterations=100, k=0.3)
+            except Exception as e:
+                print(f"Error en el layout del grafo: {e}")
+                pos = nx.random_layout(graph, seed=42) # Plan B
+            # Guardar las posiciones calculadas en el grafo para uso futuro
+            for node_id, coords in pos.items():
+                graph.nodes[node_id]['pos'] = coords
+
+        # Escalar posiciones para que encajen en el canvas
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        padding = 50
+        
+        # Normalizar posiciones de -1 a 1
+        min_x = min(p[0] for p in pos.values())
+        max_x = max(p[0] for p in pos.values())
+        min_y = min(p[1] for p in pos.values())
+        max_y = max(p[1] for p in pos.values())
+
+        # Evitar división por cero si todos los nodos están en la misma posición
+        range_x = max_x - min_x if max_x > min_x else 1
+        range_y = max_y - min_y if max_y > min_y else 1
+
+        scaled_pos = {
+            node: (
+                padding + (p[0] - min_x) / range_x * (width - 2 * padding),
+                padding + (p[1] - min_y) / range_y * (height - 2 * padding)
+            ) for node, p in pos.items()
+        }
+
+        # Dibujar aristas (conexiones)
+        for edge in graph.edges(data=True):
+            u, v, data = edge
+            start_pos = scaled_pos[edge[0]]
+            end_pos = scaled_pos[edge[1]]
+            line_item = None
+            
+            edge_type = data.get('type', 'inferred')
+            if edge_type == 'snmp_confirmed':
+                line_item = canvas.create_line(start_pos, end_pos, fill="#2CC985", width=2) # Verde sólido
+            elif edge_type == 'inferred_latency':
+                line_item = canvas.create_line(start_pos, end_pos, fill="#FFFFFF", width=1.5) # Blanco para cableado inferido
+            elif edge_type == 'inferred_wifi_or_remote':
+                line_item = canvas.create_line(start_pos, end_pos, fill="#AAAAAA", width=1, dash=(4, 4)) # Gris punteado
+            else: # Fallback para cualquier otro tipo de conexión
+                line_item = canvas.create_line(start_pos, end_pos, fill="#555555", width=1.5)
+            
+            if line_item:
+                self.edge_canvas_items[tuple(sorted((u, v)))] = line_item
+
+        # Dibujar nodos (dispositivos)
+        for node, (x, y) in scaled_pos.items():
+            node_data = graph.nodes[node]
+            node_type = node_data.get('type')
+            
+            # Crear una etiqueta única para cada nodo para poder identificarlo
+            node_tag = f"node_{node}"
+            node_shape_tag = f"node_shape_{node}" # Etiqueta específica para la forma del nodo
+            
+            if node_type == 'switch_snmp' or node_type == 'virtual_switch':
+                # Dibujar switches (reales o virtuales) como un cuadrado
+                item = canvas.create_rectangle(x-12, y-12, x+12, y+12, fill="#E53B3B", outline="white", width=2, tags=(node_tag, "node", node_shape_tag))
+                text_item = canvas.create_text(x, y+20, text=node_data.get('hostname', node), fill="white", font=('TkDefaultFont', 9, 'bold'), tags=(node_tag, "text")) # type: ignore
+            elif node_data.get('hostname') == "Gateway/Router":
+                # Dibujar el router de forma diferente
+                item = canvas.create_rectangle(x-18, y-12, x+18, y+12, fill="#2CC985", outline="white", width=2, tags=(node_tag, "node", node_shape_tag))
+                text_item = canvas.create_text(x, y+25, text=node_data.get('hostname', node), fill="white", font=('TkDefaultFont', 9), tags=(node_tag, "text"))
+            else:
+                # Dibujar nodos de dispositivos normales
+                item = canvas.create_oval(x-15, y-15, x+15, y+15, fill="#3470b6", outline="white", width=2, tags=(node_tag, "node", node_shape_tag))
+                text_item = canvas.create_text(x, y+25, text=node_data.get('hostname', node), fill="white", font=('TkDefaultFont', 9), tags=(node_tag, "text")) # type: ignore
+
+            # Vincular eventos de hover para el tooltip
+            canvas.tag_bind(item, "<Enter>", lambda event, n=node: self.show_tooltip(event, n))
+            canvas.tag_bind(item, "<Leave>", self.hide_tooltip)
+
+    def show_tooltip(self, event, node_ip):
+        if self.tooltip:
+            self.tooltip.destroy()
+
+        node_data = self.topology_graph.nodes[node_ip]
+        tooltip_text = (
+            f"IP: {node_data.get('ip', 'N/A')}\n"
+            f"MAC: {node_data.get('mac', 'N/A')}\n"
+            f"Hostname: {node_data.get('hostname', 'N/A')}\n"
+            f"Latencia: {node_data.get('latency', -1.0):.2f} ms"
+        )
+
+        self.tooltip = ctk.CTkToplevel(self)
+        self.tooltip.wm_overrideredirect(True) # Sin bordes de ventana
+        self.tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+        
+        label = ctk.CTkLabel(self.tooltip, text=tooltip_text, justify="left", corner_radius=5, fg_color="#424242", text_color="white")
+        label.pack(ipadx=5, ipady=5)
+
+    def hide_tooltip(self, event):
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None
+
+    def on_node_press(self, event):
+        """Se llama al presionar el botón del ratón en el canvas."""
+        item = self.topology_canvas.find_closest(event.x, event.y)[0]
+        if "node" in self.topology_canvas.gettags(item):
+            self._drag_data["item"] = item
+            self._drag_data["x"] = event.x
+            self._drag_data["y"] = event.y
+
+    def on_node_drag(self, event):
+        """Se llama cuando se arrastra el ratón con el botón presionado."""
+        if self._drag_data.get("item"):
+            delta_x = event.x - self._drag_data["x"]
+            delta_y = event.y - self._drag_data["y"]
+
+            # Mover todos los elementos del nodo (forma y texto)
+            node_tag = self.topology_canvas.gettags(self._drag_data["item"])[0]
+            for item_id in self.topology_canvas.find_withtag(node_tag):
+                self.topology_canvas.move(item_id, delta_x, delta_y)
+
+            # Actualizar la posición para el siguiente evento de arrastre
+            self._drag_data["x"] = event.x
+            self._drag_data["y"] = event.y
+
+            # Actualizar las líneas de conexión
+            node_id = node_tag.replace("node_", "")
+            if self.topology_graph and self.topology_graph.has_node(node_id):
+                # Obtener las coordenadas actuales del centro de la forma del nodo
+                shape_items = self.topology_canvas.find_withtag(f"node_shape_{node_id}")
+                if not shape_items: return
+                coords = self.topology_canvas.coords(shape_items[0])
+                if not coords: return # Añadir esta verificación para evitar errores si las coords no existen
+
+                new_center_x = (coords[0] + coords[2]) / 2
+                new_center_y = (coords[1] + coords[3]) / 2
+
+                for neighbor in self.topology_graph.neighbors(node_id):
+                    edge_key = tuple(sorted((node_id, neighbor)))
+                    if edge_key in self.edge_canvas_items:
+                        line_item = self.edge_canvas_items[edge_key]
+                        self.actualizar_coordenadas_linea(line_item, neighbor, new_center_x, new_center_y)
+
+    def on_node_release(self, event):
+        """Se llama al soltar el botón del ratón."""
+        if self._drag_data.get("item") and "node" in self.topology_canvas.gettags(self._drag_data["item"]):
+            node_tag = self.topology_canvas.gettags(self._drag_data["item"])[0]
+            node_id = node_tag.replace("node_", "")
+
+            if self.topology_graph and self.topology_graph.has_node(node_id):
+                # Obtener las coordenadas finales de la forma para guardarlas
+                dragged_shape_items = self.topology_canvas.find_withtag(f"node_shape_{node_id}")
+                if not dragged_shape_items: return
+                coords = self.topology_canvas.coords(dragged_shape_items[0])
+                if not coords: return
+                x_center = (coords[0] + coords[2]) / 2
+                y_center = (coords[1] + coords[3]) / 2
+                
+                # Des-escalar la posición para guardarla en el grafo (rango 0-1)
+                width, height = self.topology_canvas.winfo_width(), self.topology_canvas.winfo_height()
+                padding = 50
+                
+                # Evitar división por cero
+                range_x = width - 2 * padding if width > 2 * padding else 1
+                range_y = height - 2 * padding if height > 2 * padding else 1
+
+                # Guardar la posición normalizada (no la del canvas)
+                self.topology_graph.nodes[node_id]['pos'] = (
+                    (x_center - padding) / range_x,
+                    (y_center - padding) / range_y
+                )
+                print(f"Posición actualizada para {node_id}")
+
+        self._drag_data["item"] = None
+        self._drag_data["x"] = 0
+        self._drag_data["y"] = 0
+
+    def actualizar_coordenadas_linea(self, line_item, other_node_id, new_x, new_y):
+        """Actualiza una línea conectando la nueva posición (new_x, new_y) con el centro del 'other_node_id'."""
+        # Obtener el item del canvas para el nodo que no se movió
+        other_node_shape_tag = f"node_shape_{other_node_id}" # Usar la etiqueta específica de la forma
+        other_node_items = self.topology_canvas.find_withtag(other_node_shape_tag)
+        
+        if not other_node_items: return
+        
+        # Obtener las coordenadas del centro del nodo que no se movió
+        other_item_coords = self.topology_canvas.coords(other_node_items[0])
+        other_x = (other_item_coords[0] + other_item_coords[2]) / 2
+        other_y = (other_item_coords[1] + other_item_coords[3]) / 2
+        
+        # Actualizar las coordenadas de la línea para que vaya de un punto al otro
+        self.topology_canvas.coords(line_item, new_x, new_y, other_x, other_y)
+
+    def guardar_posiciones_topologia(self):
+        if not self.topology_graph:
+            self.actualizar_estado("No hay topología para guardar.")
+            return
+        
+        node_positions = {node: data['pos'] for node, data in self.topology_graph.nodes(data=True) if 'pos' in data}
+        
+        file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("Archivos JSON", "*.json")], title="Guardar Disposición de Topología")
+        if file_path:
+            with open(file_path, 'w') as f:
+                json.dump(node_positions, f, indent=4)
+            self.actualizar_estado(f"Disposición guardada en {os.path.basename(file_path)}")
+
+    def cargar_posiciones_topologia(self):
+        if not self.topology_graph:
+            self.actualizar_estado("No hay topología para cargar la disposición.")
+            return
+        
+        file_path = filedialog.askopenfilename(filetypes=[("Archivos JSON", "*.json")], title="Cargar Disposición de Topología")
+        if file_path:
+            with open(file_path, 'r') as f:
+                node_positions = json.load(f)
+            
+            nx.set_node_attributes(self.topology_graph, node_positions, 'pos')
+            self.dibujar_topologia(self.topology_graph)
+            self.actualizar_estado(f"Disposición cargada desde {os.path.basename(file_path)}")
+
     def limpiar_tabla(self):
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -467,7 +674,8 @@ class App(ctk.CTk):
         """Obtiene la dirección IP de la fila seleccionada en la tabla."""
         selected_item = self.tree.selection()
         if selected_item:
-            return self.tree.item(selected_item[0])['values'][0]
+            # values[1] es la columna de la IP. values[0] es el Estado.
+            return self.tree.item(selected_item[0])['values'][1]
         return None
 
     def hacer_ping_dispositivo(self):
@@ -504,36 +712,36 @@ class App(ctk.CTk):
             file_path = filedialog.asksaveasfilename( # type: ignore
                 defaultextension=".csv",
                 filetypes=[("Archivos CSV", "*.csv"), ("Todos los archivos", "*.*")],
-                title=self.lang.get("export_dialog_title")
+                title=self.lang.obtener("export_dialog_title")
             )
         except Exception as e:
-            self.update_status(f"Dialog error: {e}")
+            self.actualizar_estado(f"Dialog error: {e}")
             return
 
         if not file_path:
-            self.update_status(self.lang.get("export_status_cancelled"))
+            self.actualizar_estado(self.lang.obtener("export_status_cancelled"))
             return
 
         try:
             with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
                 writer = csv.writer(csvfile)
-                writer.writerow([self.lang.get(f"col_{c.lower().replace(' ', '_')}") for c in self.tree["columns"]])
+                writer.writerow([self.lang.obtener(f"col_{c.lower().replace(' ', '_')}") for c in self.tree["columns"]])
                 for child_id in self.tree.get_children():
                     writer.writerow(self.tree.item(child_id)['values'])
-            self.update_status(self.lang.get("export_status_success").format(os.path.basename(file_path)))
+            self.actualizar_estado(self.lang.obtener("export_status_success").format(os.path.basename(file_path)))
         except Exception as e:
-            self.update_status(f"Export error: {e}")
+            self.actualizar_estado(f"Export error: {e}")
 
-    def start_port_scan(self, ip):
+    def iniciar_escaneo_puertos(self, ip):
         """Inicia el escaneo de puertos en un hilo y muestra una ventana de progreso."""
         # Crear una nueva ventana Toplevel para el progreso
         port_scan_window = ctk.CTkToplevel(self)
-        port_scan_window.title(self.lang.get("portscan_window_title").format(ip))
+        port_scan_window.title(self.lang.obtener("portscan_window_title").format(ip))
         port_scan_window.geometry("400x150")
         port_scan_window.transient(self) # Mantener la ventana por encima de la principal
         port_scan_window.grab_set() # Bloquear interacción con la ventana principal
 
-        label = ctk.CTkLabel(port_scan_window, text=self.lang.get("portscan_window_label").format(ip))
+        label = ctk.CTkLabel(port_scan_window, text=self.lang.obtener("portscan_window_label").format(ip))
         label.pack(pady=20)
 
         progress_bar = ctk.CTkProgressBar(port_scan_window, width=350)
@@ -546,7 +754,7 @@ class App(ctk.CTk):
         def run_scan():
             # Lista de puertos comunes a escanear
             common_ports = [21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1723, 3306, 3389, 5900, 8080]
-            open_ports = scan_ports(ip, common_ports, progress_callback=update_port_progress)
+            open_ports = escanear_puertos(ip, common_ports, callback_progreso=update_port_progress)
             
             # Cuando termina, le pedimos al hilo principal que cierre la ventana de progreso
             # y muestre los resultados. Esto evita la condición de carrera.
@@ -585,12 +793,6 @@ class App(ctk.CTk):
         self.cancel_button.configure(state="disabled")
 
     def mostrar_dialogo_acerca_de(self):
-        # Detener el parpadeo si está activo al abrir otra ventana
-        if self.blinking_active:
-            self.blinking_active = False
-            self.after_cancel(self.blinking_job_id) # type: ignore
-        self.status_label.configure(font=ctk.CTkFont(weight="normal"), text_color=self.label_ip.cget("text_color"))
-
         """Muestra la ventana 'Acerca de' con información del programa."""
         about_window = ctk.CTkToplevel(self)
         about_window.title(self.lang.obtener("about_title"))

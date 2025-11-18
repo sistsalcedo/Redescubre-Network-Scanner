@@ -10,12 +10,12 @@ from scapy.all import ARP, Ether, srp, conf, IP, TCP, ICMP, sr1
 
 # --- Variables Globales ---
 # Usaremos nuestro propio diccionario para la base de datos de fabricantes MAC.
-# Se carga una vez al inicio.
-mac_vendor_db = {}
+# Se carga una vez al inicio en configurar_base_de_datos_mac().
+bd_fabricantes_mac = {}
 
 # --- Funciones de Detección de Red ---
 
-def get_default_network_range():
+def obtener_rango_red_por_defecto():
     """
     Detecta la red local activa y devuelve el rango en notación CIDR.
     Ejemplo: '192.168.1.0/24'. Incluye métodos de respaldo.
@@ -26,16 +26,16 @@ def get_default_network_range():
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.settimeout(2)
             s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
+            ip_local = s.getsockname()[0]
 
         # Buscar en la tabla de rutas de Scapy la que corresponde a nuestra IP local.
-        for network_addr, netmask, _, interface, address, _ in conf.route.routes:
-            if netmask != 0 and address == local_ip:
-                network_str = str(ipaddress.IPv4Address(network_addr))
-                prefix_len = bin(netmask).count('1')
-                cidr_range = f"{network_str}/{prefix_len}"
-                print(f"[*] Red detectada automáticamente con Scapy: {cidr_range} en la interfaz {interface}")
-                return cidr_range
+        for dir_red, mascara_red, _, interfaz, direccion, _ in conf.route.routes:
+            if mascara_red != 0 and direccion == ip_local:
+                red_str = str(ipaddress.IPv4Address(dir_red))
+                longitud_prefijo = bin(mascara_red).count('1')
+                rango_cidr = f"{red_str}/{longitud_prefijo}"
+                print(f"[*] Red detectada automáticamente con Scapy: {rango_cidr} en la interfaz {interfaz}")
+                return rango_cidr
         raise ConnectionError("No se encontró una ruta de red local válida en Scapy.")
     except (OSError, IndexError, ConnectionError) as e:
         print(f"[!] No se pudo detectar la red con Scapy ({e}). Usando método de respaldo.")
@@ -44,57 +44,79 @@ def get_default_network_range():
             hostname = socket.gethostname()
             ip_addr = socket.gethostbyname(hostname)
             # Asumir una máscara de subred /24, que es la más común en redes domésticas/pequeñas.
-            network = ipaddress.ip_network(f"{ip_addr}/24", strict=False)
-            cidr_range = str(network.with_prefixlen)
-            print(f"[*] Red detectada con método de respaldo: {cidr_range}")
-            return cidr_range
+            red = ipaddress.ip_network(f"{ip_addr}/24", strict=False)
+            rango_cidr = str(red.with_prefixlen)
+            print(f"[*] Red detectada con método de respaldo: {rango_cidr}")
+            return rango_cidr
         except socket.gaierror:
             print("[!] Error crítico: No se pudo detectar la red. Por favor, ingrésala manualmente.")
             return None
 
 # --- Funciones de Búsqueda y Resolución (Ejecutadas en Hilos) ---
 
-def _resolve_hostname(ip_addr, update_callback):
+def _resolver_hostname(dir_ip, callback_actualizacion):
     """
     Resuelve el hostname de una IP. Se ejecuta en un hilo para no bloquear la GUI.
     """
     hostname = "Desconocido"
     try:
         # Intenta obtener el nombre de host a través de una búsqueda DNS inversa.
-        hostname = socket.gethostbyaddr(ip_addr)[0]
+        hostname = socket.gethostbyaddr(dir_ip)[0]
     except socket.herror:
         # Si falla, comprobamos si es el gateway por defecto.
         try:
-            if ip_addr == conf.route.route("0.0.0.0")[2]:
+            if dir_ip == conf.route.route("0.0.0.0")[2]:
                 hostname = "Gateway/Router"
         except (IndexError, OSError):
             # Si todo falla, se queda como "Desconocido".
             pass
     
-    if update_callback:
-        update_callback({"ip": ip_addr, "hostname": hostname})
+    if callback_actualizacion:
+        callback_actualizacion({"ip": dir_ip, "hostname": hostname})
 
-def _resolve_manufacturer(mac_db, mac_addr, ip_addr, update_callback):
+def _medir_latencia(dir_ip, callback_actualizacion, num_pings=3):
+    """Mide la latencia a una IP enviando varios pings y calculando el promedio."""
+    latencias = []
+    for _ in range(num_pings):
+        try:
+            # sr1 devuelve el primer paquete de respuesta
+            respuesta = sr1(IP(dst=dir_ip)/ICMP(), timeout=0.2, verbose=0)
+            if respuesta:
+                # La latencia es la diferencia entre el tiempo de recepción y envío
+                latencia_ms = (respuesta.time - respuesta.sent_time) * 1000
+                latencias.append(latencia_ms)
+        except Exception:
+            pass # Ignorar errores de ping
+    
+    if latencias:
+        latencia_promedio = sum(latencias) / len(latencias)
+        if callback_actualizacion:
+            callback_actualizacion({"ip": dir_ip, "latency": latencia_promedio})
+    else:
+        if callback_actualizacion:
+            callback_actualizacion({"ip": dir_ip, "latency": -1}) # -1 indica que no se pudo medir
+
+def _resolver_fabricante(bd_mac, dir_mac, dir_ip, callback_actualizacion):
     """
     Busca el fabricante de una MAC en nuestro diccionario local. Se ejecuta en un hilo.
     """
     manufacturer = "Desconocido"
     try:
-        if mac_db and mac_addr:
+        if bd_mac and dir_mac:
             # Normaliza la MAC al formato XX-XX-XX y toma los primeros 8 caracteres.
-            prefix = mac_addr.upper().replace(':', '-')[:8]
+            prefijo = dir_mac.upper().replace(':', '-')[:8]
             # Busca el prefijo en el diccionario. Si no lo encuentra, devuelve "Desconocido".
-            manufacturer = mac_db.get(prefix, "Desconocido")
-        elif not mac_db:
+            manufacturer = bd_mac.get(prefijo, "Desconocido")
+        elif not bd_mac:
             manufacturer = "BD no cargada"
-        else: # mac_addr es None o vacío
+        else: # dir_mac es None o vacío
             manufacturer = "N/A"
     except Exception as e:
-        print(f"[!] Error al resolver fabricante para {mac_addr}: {e}")
+        print(f"[!] Error al resolver fabricante para {dir_mac}: {e}")
         manufacturer = "Error de búsqueda"
 
-    if update_callback:
-        update_callback({"ip": ip_addr, "manufacturer": manufacturer})
+    if callback_actualizacion:
+        callback_actualizacion({"ip": dir_ip, "manufacturer": manufacturer})
 
 # --- Gestión de la Base de Datos de Fabricantes ---
 
@@ -106,201 +128,205 @@ def get_data_directory():
     """
     if getattr(sys, 'frozen', False):
         # %APPDATA% es la ubicación estándar para datos de aplicación por usuario en Windows.
-        app_data_dir = os.environ.get('APPDATA', Path.home())
-        base_dir = Path(app_data_dir) / 'NetworkScanner'
+        dir_app_data = os.environ.get('APPDATA', Path.home())
+        dir_base = Path(dir_app_data) / 'NetworkScanner'
     else:
         # En desarrollo, usa una carpeta local para facilidad de acceso.
-        base_dir = Path(__file__).parent / "data"
+        dir_base = Path(__file__).parent / "data"
 
-    base_dir.mkdir(parents=True, exist_ok=True)
-    return str(base_dir)
+    dir_base.mkdir(parents=True, exist_ok=True)
+    return str(dir_base)
 
-def _copy_db_if_needed(data_dir):
+def _copiar_bd_si_es_necesario(directorio_datos):
     """
     Si se ejecuta como .exe, copia la base de datos desde el paquete a un directorio persistente.
     """
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         # _MEIPASS es la carpeta temporal donde PyInstaller extrae los datos.
-        embedded_db_path = Path(sys._MEIPASS) / "mac_vendors.txt"
-        target_db_path = Path(data_dir) / "mac_vendors.txt"
+        ruta_bd_embebida = Path(sys._MEIPASS) / "mac_vendors.txt"
+        ruta_bd_destino = Path(directorio_datos) / "mac_vendors.txt"
 
         # Copia el archivo solo si no existe en el destino.
-        if embedded_db_path.exists() and not target_db_path.exists():
-            print(f"[*] Copiando base de datos MAC embebida a {target_db_path}")
+        if ruta_bd_embebida.exists() and not ruta_bd_destino.exists():
+            print(f"[*] Copiando base de datos MAC embebida a {ruta_bd_destino}")
             try:
-                shutil.copy2(str(embedded_db_path), str(target_db_path))
+                shutil.copy2(str(ruta_bd_embebida), str(ruta_bd_destino))
             except Exception as e:
                 print(f"[!] Error al copiar la base de datos: {e}")
 
-def _load_mac_vendors_from_file(file_path):
+def _cargar_fabricantes_mac_desde_archivo(ruta_archivo):
     """
     Carga los fabricantes de MAC desde un archivo CSV a un diccionario en memoria.
     """
-    db = {}
+    bd = {}
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(ruta_archivo, 'r', encoding='utf-8') as f:
             # Omitir la línea de cabecera del CSV.
             next(f, None)
-            reader = csv.reader(f)
-            for row in reader:
+            lector = csv.reader(f)
+            for row in lector:
                 if len(row) >= 2:
                     # Columna 0: Prefijo MAC, Columna 1: Nombre del fabricante.
                     # Normalizamos el prefijo al formato XX-XX-XX para consistencia.
-                    prefix = row[0].upper().replace(':', '-')[:8]
-                    vendor = row[1]
-                    db[prefix] = vendor
-        return db, f"[*] Base de datos MAC cargada desde {file_path}.\n"
+                    prefijo = row[0].upper().replace(':', '-')[:8]
+                    fabricante = row[1]
+                    bd[prefijo] = fabricante
+        return bd, f"[*] Base de datos MAC cargada desde {ruta_archivo}.\n"
     except FileNotFoundError:
         return {}, "[!] Error: Archivo de base de datos MAC no encontrado.\n"
     except Exception as e:
         return {}, f"[!] Error al leer la base de datos MAC: {e}\n"
 
-def setup_mac_database():
+def configurar_base_de_datos_mac():
     """
     Configura y carga la base de datos de fabricantes MAC en memoria.
     Retorna: (dict, str) - El diccionario de fabricantes y un mensaje de estado.
     """
-    global mac_vendor_db
-    data_dir = get_data_directory()
-    _copy_db_if_needed(data_dir)
+    global bd_fabricantes_mac
+    directorio_datos = get_data_directory()
+    _copiar_bd_si_es_necesario(directorio_datos)
     
-    db_file = os.path.join(data_dir, "mac_vendors.txt")
-    status_message = ""
+    archivo_bd = os.path.join(directorio_datos, "mac_vendors.txt")
+    mensaje_estado = ""
     
-    if os.path.exists(db_file):
-        mac_vendor_db, msg = _load_mac_vendors_from_file(db_file)
-        status_message += msg
-        if mac_vendor_db:
+    if os.path.exists(archivo_bd):
+        bd_fabricantes_mac, msg = _cargar_fabricantes_mac_desde_archivo(archivo_bd)
+        mensaje_estado += msg
+        if bd_fabricantes_mac:
             try:
-                size_kb = os.path.getsize(db_file) / 1024
-                status_message += f"[*] Usando base de datos existente ({len(mac_vendor_db)} entradas, {size_kb:.1f} KB).\n"
+                tamano_kb = os.path.getsize(archivo_bd) / 1024
+                mensaje_estado += f"[*] Usando base de datos existente ({len(bd_fabricantes_mac)} entradas, {tamano_kb:.1f} KB).\n"
             except OSError:
                 pass
-            status_message += "[*] Base de datos MAC cargada en memoria.\n"
+            mensaje_estado += "[*] Base de datos MAC cargada en memoria.\n"
     else:
-        status_message += "[!] Error crítico: No se encontró el archivo de la base de datos MAC.\n"
+        mensaje_estado += "[!] Error crítico: No se encontró el archivo de la base de datos MAC.\n"
     
-    return mac_vendor_db, status_message
+    return bd_fabricantes_mac, mensaje_estado
 
 # --- Funciones Principales de Escaneo ---
 
-def _get_hosts_to_scan(ip_range):
+def _obtener_hosts_a_escanear(rango_ip):
     """
     Parsea el rango de IP de entrada y devuelve una lista de objetos IP a escanear.
     """
     hosts_to_scan = []
-    network = None
+    red = None
     
-    if "-" in ip_range:
-        start_ip_str, end_ip_str = ip_range.split('-')
-        start_ip = ipaddress.ip_address(start_ip_str.strip())
-        end_ip = ipaddress.ip_address(end_ip_str.strip())
-        current_ip = start_ip
-        while current_ip <= end_ip:
-            hosts_to_scan.append(current_ip)
-            current_ip += 1
+    if "-" in rango_ip:
+        ip_inicio_str, ip_fin_str = rango_ip.split('-')
+        ip_inicio = ipaddress.ip_address(ip_inicio_str.strip())
+        ip_fin = ipaddress.ip_address(ip_fin_str.strip())
+        ip_actual = ip_inicio
+        while ip_actual <= ip_fin:
+            hosts_to_scan.append(ip_actual)
+            ip_actual += 1
         # Usamos la IP de inicio para determinar la red para la superposición.
-        network = ipaddress.ip_network(f"{start_ip}/{start_ip.max_prefixlen}", strict=False)
+        red = ipaddress.ip_network(f"{ip_inicio}/{ip_inicio.max_prefixlen}", strict=False)
     else:
-        network = ipaddress.ip_network(ip_range.strip(), strict=False)
-        if network.num_addresses == 1:
-            hosts_to_scan.append(network.network_address)
+        red = ipaddress.ip_network(rango_ip.strip(), strict=False)
+        if red.num_addresses == 1:
+            hosts_to_scan.append(red.network_address)
         else:
-            hosts_to_scan = list(network.hosts())
+            hosts_to_scan = list(red.hosts())
             
-    return hosts_to_scan, network
+    return hosts_to_scan, red
 
-def scan_network(mac_db_instance, ip_range, progress_callback=None, result_callback=None, update_callback=None, cancel_event=None):
+def escanear_red(instancia_bd_mac, rango_ip, callback_progreso=None, callback_resultado=None, callback_actualizacion=None, evento_cancelar=None):
     """
     Escanea la red para encontrar dispositivos activos. Usa ARP para redes locales y ICMP para remotas.
     """
-    print(f"[*] Iniciando escaneo de red: {ip_range}...")
+    print(f"[*] Iniciando escaneo de red: {rango_ip}...")
+    dispositivos_encontrados = []
     
     try:
-        hosts_to_scan, network_to_scan = _get_hosts_to_scan(ip_range)
+        hosts_to_scan, red_a_escanear = _obtener_hosts_a_escanear(rango_ip)
         total_hosts = len(hosts_to_scan)
         if total_hosts == 0:
             print("[!] No hay hosts para escanear en el rango proporcionado.")
-            return
+            return []
     except ValueError as e:
-        print(f"[!] Rango de IP inválido: {ip_range} ({e})")
-        if progress_callback:
-            progress_callback(1.0)
-        return
+        print(f"[!] Rango de IP inválido: {rango_ip} ({e})")
+        if callback_progreso:
+            callback_progreso(1.0)
+        return []
 
     # Determina si el escaneo es local para usar ARP (más rápido y obtiene MACs).
-    local_network_str = get_default_network_range()
-    is_local_scan = local_network_str and network_to_scan and ipaddress.ip_network(local_network_str).overlaps(network_to_scan)
-    print(f"[*] Modo de escaneo: {'Local (ARP)' if is_local_scan else 'Remoto (ICMP)'}")
+    red_local_str = obtener_rango_red_por_defecto()
+    es_escaneo_local = red_local_str and red_a_escanear and ipaddress.ip_network(red_local_str).overlaps(red_a_escanear)
+    print(f"[*] Modo de escaneo: {'Local (ARP)' if es_escaneo_local else 'Remoto (ICMP)'}")
 
     for i, host in enumerate(hosts_to_scan):
-        if cancel_event and cancel_event.is_set():
+        if evento_cancelar and evento_cancelar.is_set():
             print("[*] Escaneo cancelado por el usuario.")
             break
 
-        host_ip = str(host)
-        device = None
+        ip_host = str(host)
+        dispositivo = None
 
         try:
-            if is_local_scan:
+            if es_escaneo_local:
                 # Escaneo ARP para redes locales
-                arp_request = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=host_ip)
-                answered, _ = srp(arp_request, timeout=0.2, verbose=0, retry=1)
-                if answered:
-                    response = answered[0][1]
-                    device = {"ip": response.psrc, "mac": response.hwsrc}
+                solicitud_arp = Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=ip_host)
+                respondidos, _ = srp(solicitud_arp, timeout=0.2, verbose=0, retry=1)
+                if respondidos:
+                    respuesta = respondidos[0][1]
+                    dispositivo = {"ip": respuesta.psrc, "mac": respuesta.hwsrc}
             else:
                 # Escaneo ICMP (ping) para redes remotas
-                icmp_packet = IP(dst=host_ip) / ICMP()
-                response = sr1(icmp_packet, timeout=0.5, verbose=0)
-                if response:
-                    device = {"ip": response.src, "mac": "N/A"}
+                paquete_icmp = IP(dst=ip_host) / ICMP()
+                respuesta = sr1(paquete_icmp, timeout=0.5, verbose=0)
+                if respuesta:
+                    dispositivo = {"ip": respuesta.src, "mac": "N/A"}
         except Exception as e:
-            print(f"[!] Error al escanear {host_ip}: {e}")
+            print(f"[!] Error al escanear {ip_host}: {e}")
             continue
 
-        if device:
-            device.update({"manufacturer": "Buscando...", "hostname": "Resolviendo..."})
-            if result_callback:
-                result_callback(device)
+        if dispositivo:
+            dispositivo.update({"manufacturer": "Buscando...", "hostname": "Resolviendo...", "latency": -1.0})
+            dispositivos_encontrados.append(dispositivo)
+            if callback_resultado:
+                callback_resultado(dispositivo)
 
             # Iniciar hilos para tareas que pueden ser lentas (resolución de nombres y fabricantes)
-            threading.Thread(target=_resolve_hostname, args=(device["ip"], update_callback), daemon=True).start()
-            if is_local_scan:
-                threading.Thread(target=_resolve_manufacturer, args=(mac_db_instance, device["mac"], device["ip"], update_callback), daemon=True).start()
+            threading.Thread(target=_medir_latencia, args=(dispositivo["ip"], callback_actualizacion), daemon=True).start()
+            threading.Thread(target=_resolver_hostname, args=(dispositivo["ip"], callback_actualizacion), daemon=True).start()
+            if es_escaneo_local:
+                threading.Thread(target=_resolver_fabricante, args=(instancia_bd_mac, dispositivo["mac"], dispositivo["ip"], callback_actualizacion), daemon=True).start()
 
-        if progress_callback:
-            progress_callback((i + 1) / total_hosts)
+        if callback_progreso:
+            callback_progreso((i + 1) / total_hosts)
 
     print("[*] Fase de descubrimiento de red completada.")
+    return dispositivos_encontrados
 
-def scan_ports(host_ip, ports_to_scan, progress_callback=None):
+def escanear_puertos(ip_host, puertos_a_escanear, callback_progreso=None):
     """
     Escanea una lista de puertos TCP en un host específico para ver si están abiertos.
     """
     open_ports = []
-    total_ports = len(ports_to_scan)
-    print(f"[*] Escaneando puertos en {host_ip}...")
+    total_ports = len(puertos_a_escanear)
+    print(f"[*] Escaneando puertos en {ip_host}...")
 
-    for i, port in enumerate(ports_to_scan):
+    for i, port in enumerate(puertos_a_escanear):
         try:
             # Envía un paquete TCP SYN para iniciar un handshake
-            packet = IP(dst=host_ip) / TCP(dport=port, flags="S")
-            response = sr1(packet, timeout=0.5, verbose=0)
+            paquete = IP(dst=ip_host) / TCP(dport=port, flags="S")
+            respuesta = sr1(paquete, timeout=0.5, verbose=0)
 
             # Si recibimos un SYN-ACK (0x12), el puerto está abierto.
-            if response and response.haslayer(TCP) and response.getlayer(TCP).flags == 0x12:
+            if respuesta and respuesta.haslayer(TCP) and respuesta.getlayer(TCP).flags == 0x12:
                 # Enviamos un RST para cerrar la conexión limpiamente.
-                sr1(IP(dst=host_ip) / TCP(dport=port, flags="R"), timeout=0.5, verbose=0)
+                sr1(IP(dst=ip_host) / TCP(dport=port, flags="R"), timeout=0.5, verbose=0)
                 open_ports.append(port)
-                print(f"[+] Puerto {port} abierto en {host_ip}")
+                print(f"[+] Puerto {port} abierto en {ip_host}")
         except Exception as e:
-            print(f"[!] Error al escanear puerto {port} en {host_ip}: {e}")
+            print(f"[!] Error al escanear puerto {port} en {ip_host}: {e}")
         
-        if progress_callback:
-            progress_callback((i + 1) / total_ports)
+        if callback_progreso:
+            callback_progreso((i + 1) / total_ports)
 
-    print(f"[*] Escaneo de puertos en {host_ip} completado. Puertos abiertos: {open_ports}")
+    print(f"[*] Escaneo de puertos en {ip_host} completado. Puertos abiertos: {open_ports}")
     return open_ports
 
 # --- Bloque de Ejecución de Prueba ---
@@ -313,16 +339,16 @@ if __name__ == "__main__":
     print("--- Iniciando prueba del backend ---")
     
     # 1. Probar la configuración de la base de datos MAC
-    db_instance, status_msg = setup_mac_database()
-    print(status_msg)
-    if not db_instance:
+    instancia_bd, msg_estado = configurar_base_de_datos_mac()
+    print(msg_estado)
+    if not instancia_bd:
         print("[!] La prueba no puede continuar sin la base de datos MAC.")
         sys.exit(1)
         
     # 2. Probar la detección de red
-    target_range = get_default_network_range()
-    if target_range:
-        print(f"\n[+] Prueba de detección de red completada. Rango detectado: {target_range}")
+    rango_objetivo = obtener_rango_red_por_defecto()
+    if rango_objetivo:
+        print(f"\n[+] Prueba de detección de red completada. Rango detectado: {rango_objetivo}")
     else:
         print("[!] La prueba no puede continuar sin un rango de red.")
         sys.exit(1)
@@ -330,13 +356,13 @@ if __name__ == "__main__":
     # 3. Probar un escaneo simple (solo para demostración)
     print("\n--- Ejecutando un escaneo de red de demostración ---")
     
-    def demo_result(device):
-        print(f"  [+] Dispositivo encontrado: {device['ip']} ({device['mac']})")
+    def demo_resultado(dispositivo):
+        print(f"  [+] Dispositivo encontrado: {dispositivo['ip']} ({dispositivo['mac']})")
 
-    def demo_update(update):
-        print(f"  [*] Actualización para {update['ip']}: {update}")
+    def demo_actualizacion(actualizacion):
+        print(f"  [*] Actualización para {actualizacion['ip']}: {actualizacion}")
 
-    scan_network(db_instance, target_range, result_callback=demo_result, update_callback=demo_update)
+    escanear_red(instancia_bd, rango_objetivo, callback_resultado=demo_resultado, callback_actualizacion=demo_actualizacion)
     
     print("\n--- Prueba del backend completada ---")
     print("[+] Para la aplicación completa, ejecute gui_scanner.py")
