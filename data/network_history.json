@@ -4,7 +4,7 @@
         "mac": "78:9a:18:c3:c1:af",
         "manufacturer": "Routerboard.com",
         "hostname": "Gateway/Router",
-        "last_seen": "2025-11-18 17:53:11",
+        "last_seen": "2025-11-18 18:06:26",
         "status": "Online",
         "latency": -1
     },
@@ -13,7 +13,7 @@
         "mac": "d8:bb:c1:4c:25:61",
         "manufacturer": "Micro-Star INTL CO., LTD.",
         "hostname": "Desconocido",
-        "last_seen": "2025-11-18 17:53:14",
+        "last_seen": "2025-11-18 18:06:28",
         "status": "Online",
         "latency": -1
     },
@@ -22,7 +22,7 @@
         "mac": "08:00:27:77:ec:7d",
         "manufacturer": "PCS Systemtechnik GmbH",
         "hostname": "WIN-JK9QDH08R6J",
-        "last_seen": "2025-11-18 17:54:55",
+        "last_seen": "2025-11-18 18:08:04",
         "status": "Online",
         "latency": -1
     },
@@ -31,7 +31,7 @@
         "mac": "08:00:27:80:fd:b8",
         "manufacturer": "PCS Systemtechnik GmbH",
         "hostname": "DESKTOP-6NOGVFI",
-        "last_seen": "2025-11-18 17:55:00",
+        "last_seen": "2025-11-18 18:08:08",
         "status": "Online",
         "latency": -1
     },
@@ -39,8 +39,8 @@
         "ip": "192.168.10.245",
         "mac": "00:eb:d8:e0:38:8a",
         "manufacturer": "MERCUSYS TECHNOLOGIES CO., LTD.",
-        "hostname": "Desconocido",
-        "last_seen": "2025-11-18 17:55:03",
+        "hostname": "Resolviendo...",
+        "last_seen": "2025-11-18 18:08:11",
         "status": "Online",
         "latency": -1
     }

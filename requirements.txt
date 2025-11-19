@@ -1,5 +1,3 @@
 customtkinter
 scapy
 mac-vendor-lookup
-networkx
-pysnmp

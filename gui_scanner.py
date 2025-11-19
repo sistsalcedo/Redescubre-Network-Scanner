@@ -83,14 +83,14 @@ class App(ctk.CTk):
         self.table_frame.grid_rowconfigure(0, weight=1)
 
         # --- Estilo y creación de la Tabla (TreeView) ---
-        columns = ("Estado", "IP", "Hostname", "MAC", "Fabricante", "Visto por última vez")
+        columns = ("Estado", "IP", "Latencia", "Hostname", "MAC", "Fabricante", "Visto por última vez")
         self.tree = ttk.Treeview(self.table_frame, columns=columns, show="headings")
         self.configurar_estilo_tabla()
 
         # Configurar encabezados y comando de ordenamiento
         for col in columns:
             self.tree.heading(col, text=self.lang.obtener(f"col_{col.lower().replace(' ', '_')}"), command=lambda _col=col: self.ordenar_columna(_col, False))
-            self.tree.column(col, width=80 if col == "Estado" else 180, anchor="center" if col in ("Estado", "IP", "MAC") else "w")
+            self.tree.column(col, width=80 if col in ("Estado", "Latencia") else 180, anchor="center" if col in ("Estado", "IP", "MAC", "Latencia") else "w")
 
         self.tree.grid(row=0, column=0, sticky="nsew")
 
@@ -369,7 +369,11 @@ class App(ctk.CTk):
             status_text = "Offline"
             tags = ("OfflineStatus",)
 
-        values = (status_text, device.get("ip", ""), device.get("hostname", ""), mac, device.get("manufacturer", ""), device.get("last_seen", ""))
+        latency = device.get('latency', -1.0)
+        latency_text = f"{latency:.2f} ms" if latency >= 0 else "N/A"
+
+
+        values = (status_text, device.get("ip", ""), latency_text, device.get("hostname", ""), mac, device.get("manufacturer", ""), device.get("last_seen", ""))
 
         if self.tree.exists(mac):
             self.tree.item(mac, values=values, tags=tags)
@@ -395,257 +399,22 @@ class App(ctk.CTk):
             self.sort_column_name = col
         
         # Mapeo de nombres de columna de la GUI a claves del diccionario
-        column_keys = {"Estado": "status", "IP": "ip", "Hostname": "hostname", "MAC": "mac", "Fabricante": "manufacturer", "Visto por última vez": "last_seen"}
+        column_keys = {"Estado": "status", "IP": "ip", "Latencia": "latency", "Hostname": "hostname", "MAC": "mac", "Fabricante": "manufacturer", "Visto por última vez": "last_seen"}
         sort_key = column_keys.get(col, "ip")
 
         # Lógica de ordenamiento
-        key_func = lambda d: ipaddress.ip_address(d[sort_key]) if sort_key == "ip" else str(d.get(sort_key, '')).lower()
+        if sort_key == "ip":
+            key_func = lambda d: ipaddress.ip_address(d.get(sort_key, '0.0.0.0'))
+        elif sort_key == "latency":
+            key_func = lambda d: d.get(sort_key, -1.0)
+        else:
+            key_func = lambda d: str(d.get(sort_key, '')).lower()
         data_to_sort.sort(key=key_func, reverse=self.sort_reverse)
 
         # Limpiar y repoblar la tabla con los datos ordenados
         self.limpiar_tabla()
         for device in data_to_sort:
             self.actualizar_o_insertar_dispositivo_en_tabla(device)
-
-    def dibujar_topologia(self, graph):
-        """Dibuja el grafo de la red en el canvas de topología."""
-        canvas = self.topology_canvas
-        canvas.delete("all") # Limpiar canvas anterior
-
-        # Limpiar el mapeo de aristas
-        self.edge_canvas_items.clear()
-
-        # Forzar la actualización del canvas para obtener su tamaño real
-        canvas.update_idletasks()
-
-        if not graph or graph.number_of_nodes() == 0:
-            canvas.create_text(canvas.winfo_width()/2, canvas.winfo_height()/2, text="No hay topología para mostrar", fill="white")
-            return
-
-        # Comprobar si los nodos ya tienen posiciones guardadas
-        if all('pos' in data for node, data in graph.nodes(data=True)):
-            print("[Topology] Cargando posiciones guardadas.")
-            pos = nx.get_node_attributes(graph, 'pos')
-        else:
-            # Si no, calcular un nuevo layout
-            print("[Topology] Calculando nuevo layout.")
-            try:
-                pos = nx.spring_layout(graph, seed=42, iterations=100, k=0.3)
-            except Exception as e:
-                print(f"Error en el layout del grafo: {e}")
-                pos = nx.random_layout(graph, seed=42) # Plan B
-            # Guardar las posiciones calculadas en el grafo para uso futuro
-            for node_id, coords in pos.items():
-                graph.nodes[node_id]['pos'] = coords
-
-        # Escalar posiciones para que encajen en el canvas
-        width, height = canvas.winfo_width(), canvas.winfo_height()
-        padding = 50
-        
-        # Normalizar posiciones de -1 a 1
-        min_x = min(p[0] for p in pos.values())
-        max_x = max(p[0] for p in pos.values())
-        min_y = min(p[1] for p in pos.values())
-        max_y = max(p[1] for p in pos.values())
-
-        # Evitar división por cero si todos los nodos están en la misma posición
-        range_x = max_x - min_x if max_x > min_x else 1
-        range_y = max_y - min_y if max_y > min_y else 1
-
-        scaled_pos = {
-            node: (
-                padding + (p[0] - min_x) / range_x * (width - 2 * padding),
-                padding + (p[1] - min_y) / range_y * (height - 2 * padding)
-            ) for node, p in pos.items()
-        }
-
-        # Dibujar aristas (conexiones)
-        for edge in graph.edges(data=True):
-            u, v, data = edge
-            start_pos = scaled_pos[edge[0]]
-            end_pos = scaled_pos[edge[1]]
-            line_item = None
-            
-            edge_type = data.get('type', 'inferred')
-            if edge_type == 'snmp_confirmed':
-                line_item = canvas.create_line(start_pos, end_pos, fill="#2CC985", width=2) # Verde sólido
-            elif edge_type == 'inferred_latency':
-                line_item = canvas.create_line(start_pos, end_pos, fill="#FFFFFF", width=1.5) # Blanco para cableado inferido
-            elif edge_type == 'inferred_wifi_or_remote':
-                line_item = canvas.create_line(start_pos, end_pos, fill="#AAAAAA", width=1, dash=(4, 4)) # Gris punteado
-            else: # Fallback para cualquier otro tipo de conexión
-                line_item = canvas.create_line(start_pos, end_pos, fill="#555555", width=1.5)
-            
-            if line_item:
-                self.edge_canvas_items[tuple(sorted((u, v)))] = line_item
-
-        # Dibujar nodos (dispositivos)
-        for node, (x, y) in scaled_pos.items():
-            node_data = graph.nodes[node]
-            node_type = node_data.get('type')
-            
-            # Crear una etiqueta única para cada nodo para poder identificarlo
-            node_tag = f"node_{node}"
-            node_shape_tag = f"node_shape_{node}" # Etiqueta específica para la forma del nodo
-            
-            if node_type == 'switch_snmp' or node_type == 'virtual_switch':
-                # Dibujar switches (reales o virtuales) como un cuadrado
-                item = canvas.create_rectangle(x-12, y-12, x+12, y+12, fill="#E53B3B", outline="white", width=2, tags=(node_tag, "node", node_shape_tag))
-                text_item = canvas.create_text(x, y+20, text=node_data.get('hostname', node), fill="white", font=('TkDefaultFont', 9, 'bold'), tags=(node_tag, "text")) # type: ignore
-            elif node_data.get('hostname') == "Gateway/Router":
-                # Dibujar el router de forma diferente
-                item = canvas.create_rectangle(x-18, y-12, x+18, y+12, fill="#2CC985", outline="white", width=2, tags=(node_tag, "node", node_shape_tag))
-                text_item = canvas.create_text(x, y+25, text=node_data.get('hostname', node), fill="white", font=('TkDefaultFont', 9), tags=(node_tag, "text"))
-            else:
-                # Dibujar nodos de dispositivos normales
-                item = canvas.create_oval(x-15, y-15, x+15, y+15, fill="#3470b6", outline="white", width=2, tags=(node_tag, "node", node_shape_tag))
-                text_item = canvas.create_text(x, y+25, text=node_data.get('hostname', node), fill="white", font=('TkDefaultFont', 9), tags=(node_tag, "text")) # type: ignore
-
-            # Vincular eventos de hover para el tooltip
-            canvas.tag_bind(item, "<Enter>", lambda event, n=node: self.show_tooltip(event, n))
-            canvas.tag_bind(item, "<Leave>", self.hide_tooltip)
-
-    def show_tooltip(self, event, node_ip):
-        if self.tooltip:
-            self.tooltip.destroy()
-
-        node_data = self.topology_graph.nodes[node_ip]
-        tooltip_text = (
-            f"IP: {node_data.get('ip', 'N/A')}\n"
-            f"MAC: {node_data.get('mac', 'N/A')}\n"
-            f"Hostname: {node_data.get('hostname', 'N/A')}\n"
-            f"Latencia: {node_data.get('latency', -1.0):.2f} ms"
-        )
-
-        self.tooltip = ctk.CTkToplevel(self)
-        self.tooltip.wm_overrideredirect(True) # Sin bordes de ventana
-        self.tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
-        
-        label = ctk.CTkLabel(self.tooltip, text=tooltip_text, justify="left", corner_radius=5, fg_color="#424242", text_color="white")
-        label.pack(ipadx=5, ipady=5)
-
-    def hide_tooltip(self, event):
-        if self.tooltip:
-            self.tooltip.destroy()
-            self.tooltip = None
-
-    def on_node_press(self, event):
-        """Se llama al presionar el botón del ratón en el canvas."""
-        item = self.topology_canvas.find_closest(event.x, event.y)[0]
-        if "node" in self.topology_canvas.gettags(item):
-            self._drag_data["item"] = item
-            self._drag_data["x"] = event.x
-            self._drag_data["y"] = event.y
-
-    def on_node_drag(self, event):
-        """Se llama cuando se arrastra el ratón con el botón presionado."""
-        if self._drag_data.get("item"):
-            delta_x = event.x - self._drag_data["x"]
-            delta_y = event.y - self._drag_data["y"]
-
-            # Mover todos los elementos del nodo (forma y texto)
-            node_tag = self.topology_canvas.gettags(self._drag_data["item"])[0]
-            for item_id in self.topology_canvas.find_withtag(node_tag):
-                self.topology_canvas.move(item_id, delta_x, delta_y)
-
-            # Actualizar la posición para el siguiente evento de arrastre
-            self._drag_data["x"] = event.x
-            self._drag_data["y"] = event.y
-
-            # Actualizar las líneas de conexión
-            node_id = node_tag.replace("node_", "")
-            if self.topology_graph and self.topology_graph.has_node(node_id):
-                # Obtener las coordenadas actuales del centro de la forma del nodo
-                shape_items = self.topology_canvas.find_withtag(f"node_shape_{node_id}")
-                if not shape_items: return
-                coords = self.topology_canvas.coords(shape_items[0])
-                if not coords: return # Añadir esta verificación para evitar errores si las coords no existen
-
-                new_center_x = (coords[0] + coords[2]) / 2
-                new_center_y = (coords[1] + coords[3]) / 2
-
-                for neighbor in self.topology_graph.neighbors(node_id):
-                    edge_key = tuple(sorted((node_id, neighbor)))
-                    if edge_key in self.edge_canvas_items:
-                        line_item = self.edge_canvas_items[edge_key]
-                        self.actualizar_coordenadas_linea(line_item, neighbor, new_center_x, new_center_y)
-
-    def on_node_release(self, event):
-        """Se llama al soltar el botón del ratón."""
-        if self._drag_data.get("item") and "node" in self.topology_canvas.gettags(self._drag_data["item"]):
-            node_tag = self.topology_canvas.gettags(self._drag_data["item"])[0]
-            node_id = node_tag.replace("node_", "")
-
-            if self.topology_graph and self.topology_graph.has_node(node_id):
-                # Obtener las coordenadas finales de la forma para guardarlas
-                dragged_shape_items = self.topology_canvas.find_withtag(f"node_shape_{node_id}")
-                if not dragged_shape_items: return
-                coords = self.topology_canvas.coords(dragged_shape_items[0])
-                if not coords: return
-                x_center = (coords[0] + coords[2]) / 2
-                y_center = (coords[1] + coords[3]) / 2
-                
-                # Des-escalar la posición para guardarla en el grafo (rango 0-1)
-                width, height = self.topology_canvas.winfo_width(), self.topology_canvas.winfo_height()
-                padding = 50
-                
-                # Evitar división por cero
-                range_x = width - 2 * padding if width > 2 * padding else 1
-                range_y = height - 2 * padding if height > 2 * padding else 1
-
-                # Guardar la posición normalizada (no la del canvas)
-                self.topology_graph.nodes[node_id]['pos'] = (
-                    (x_center - padding) / range_x,
-                    (y_center - padding) / range_y
-                )
-                print(f"Posición actualizada para {node_id}")
-
-        self._drag_data["item"] = None
-        self._drag_data["x"] = 0
-        self._drag_data["y"] = 0
-
-    def actualizar_coordenadas_linea(self, line_item, other_node_id, new_x, new_y):
-        """Actualiza una línea conectando la nueva posición (new_x, new_y) con el centro del 'other_node_id'."""
-        # Obtener el item del canvas para el nodo que no se movió
-        other_node_shape_tag = f"node_shape_{other_node_id}" # Usar la etiqueta específica de la forma
-        other_node_items = self.topology_canvas.find_withtag(other_node_shape_tag)
-        
-        if not other_node_items: return
-        
-        # Obtener las coordenadas del centro del nodo que no se movió
-        other_item_coords = self.topology_canvas.coords(other_node_items[0])
-        other_x = (other_item_coords[0] + other_item_coords[2]) / 2
-        other_y = (other_item_coords[1] + other_item_coords[3]) / 2
-        
-        # Actualizar las coordenadas de la línea para que vaya de un punto al otro
-        self.topology_canvas.coords(line_item, new_x, new_y, other_x, other_y)
-
-    def guardar_posiciones_topologia(self):
-        if not self.topology_graph:
-            self.actualizar_estado("No hay topología para guardar.")
-            return
-        
-        node_positions = {node: data['pos'] for node, data in self.topology_graph.nodes(data=True) if 'pos' in data}
-        
-        file_path = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("Archivos JSON", "*.json")], title="Guardar Disposición de Topología")
-        if file_path:
-            with open(file_path, 'w') as f:
-                json.dump(node_positions, f, indent=4)
-            self.actualizar_estado(f"Disposición guardada en {os.path.basename(file_path)}")
-
-    def cargar_posiciones_topologia(self):
-        if not self.topology_graph:
-            self.actualizar_estado("No hay topología para cargar la disposición.")
-            return
-        
-        file_path = filedialog.askopenfilename(filetypes=[("Archivos JSON", "*.json")], title="Cargar Disposición de Topología")
-        if file_path:
-            with open(file_path, 'r') as f:
-                node_positions = json.load(f)
-            
-            nx.set_node_attributes(self.topology_graph, node_positions, 'pos')
-            self.dibujar_topologia(self.topology_graph)
-            self.actualizar_estado(f"Disposición cargada desde {os.path.basename(file_path)}")
 
     def limpiar_tabla(self):
         for item in self.tree.get_children():
@@ -842,6 +611,7 @@ class App(ctk.CTk):
         
         self.tree.heading("Estado", text=self.lang.obtener("col_estado"))
         self.tree.heading("IP", text=self.lang.obtener("col_ip"))
+        self.tree.heading("Latencia", text=self.lang.obtener("col_latencia"))
         self.tree.heading("Hostname", text=self.lang.obtener("col_hostname"))
         self.tree.heading("MAC", text=self.lang.obtener("col_mac"))
         self.tree.heading("Fabricante", text=self.lang.obtener("col_manufacturer"))
