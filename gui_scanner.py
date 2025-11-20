@@ -1,24 +1,24 @@
-"""
-Módulo principal de la interfaz gráfica (GUI) para el escáner de red.
-Utiliza CustomTkinter para crear una aplicación de escritorio moderna y responsiva
-que interactúa con el backend de escaneo (scanner_backend.py).
-"""
 import customtkinter as ctk
 from tkinter import ttk
 import threading
-
-# Librerías para las acciones del menú contextual
-import ipaddress
-import json
-import csv
-from tkinter import filedialog
 import os
 from datetime import datetime
 import webbrowser
 import tkinter as tk
+import json
+import csv
+import ipaddress
+from tkinter import filedialog, simpledialog
+from topology_manager import TopologyManager
 
 # Importamos las funciones que creamos en nuestro backend
 from scanner_backend import escanear_red, obtener_rango_red_por_defecto, escanear_puertos, configurar_base_de_datos_mac, get_data_directory
+import topology_builder # Importamos el módulo de topología
+# Importación condicional para evitar errores si falla matplotlib
+try:
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+except ImportError:
+    FigureCanvasTkAgg = None
 from languages import LANGUAGES 
 
 class LanguageManager:
@@ -67,6 +67,9 @@ class App(ctk.CTk):
         self.cancel_button = ctk.CTkButton(self.top_frame, text=self.lang.obtener("cancel_button"), command=self.cancelar_escaneo, state="disabled")
         self.cancel_button.grid(row=0, column=3, padx=(0, 10), pady=10)
 
+        self.map_button = ctk.CTkButton(self.top_frame, text=self.lang.obtener("map_button"), command=self.ver_mapa_red, fg_color="#E59400", hover_color="#B37400")
+        self.map_button.grid(row=0, column=4, padx=(0, 10), pady=10)
+
         self.top_frame.grid_columnconfigure(5, weight=1) # Columna de búsqueda se expande
         # --- Caja de búsqueda (en la misma fila) ---
         self.search_label = ctk.CTkLabel(self.top_frame, text=self.lang.obtener("search_label"))
@@ -103,6 +106,13 @@ class App(ctk.CTk):
         self.context_menu.add_command(label=self.lang.obtener("ctx_ping"), command=self.hacer_ping_dispositivo)
         self.context_menu.add_command(label=self.lang.obtener("ctx_rdp"), command=self.conectar_rdp_dispositivo)
         self.context_menu.add_command(label=self.lang.obtener("ctx_http"), command=self.abrir_http_dispositivo)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="🔌 Marcar como Switch", command=lambda: self.marcar_dispositivo_manual("switch"))
+        self.context_menu.add_command(label="🌐 Marcar como Router", command=lambda: self.marcar_dispositivo_manual("router"))
+        self.context_menu.add_command(label="🔗 Conectar a...", command=self.conectar_dispositivo_manual)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="❌ Quitar conexión manual", command=self.quitar_conexion_manual)
+        self.context_menu.add_command(label="🔄 Restablecer tipo", command=self.restablecer_tipo_manual)
 
         self.tree.bind("<Button-3>", self.mostrar_menu_contextual)
         self.tree.bind("<Double-1>", self.manejar_doble_clic)
@@ -131,6 +141,7 @@ class App(ctk.CTk):
         self.sort_reverse = False
         self.cancel_scan_event = threading.Event()
         self.blinking_job_id = None
+        self.topology_manager = TopologyManager()
 
         # --- Inicialización en segundo plano para un arranque rápido de la GUI ---
         self.iniciar_hilo_inicializacion()
@@ -425,20 +436,6 @@ class App(ctk.CTk):
 
     def manejar_doble_clic(self, event):
         """Maneja el evento de doble clic en la tabla."""
-        ip = self.obtener_ip_seleccionada()
-        if ip:
-            self.iniciar_escaneo_puertos(ip)
-
-    def mostrar_menu_contextual(self, event):
-        """Muestra el menú contextual en la posición del cursor."""
-        # Identifica la fila bajo el cursor
-        item_id = self.tree.identify_row(event.y)
-        if item_id:
-            # Selecciona la fila sobre la que se hizo clic
-            self.tree.selection_set(item_id)
-            # Muestra el menú
-            self.context_menu.post(event.x_root, event.y_root)
-
     def obtener_ip_seleccionada(self):
         """Obtiene la dirección IP de la fila seleccionada en la tabla."""
         selected_item = self.tree.selection()
@@ -556,6 +553,121 @@ class App(ctk.CTk):
         
         textbox.configure(state="disabled") # Hacer el texto de solo lectura
 
+    def mostrar_menu_contextual(self, event):
+        """Muestra el menú contextual en la fila seleccionada."""
+        item = self.tree.identify_row(event.y)
+        if item:
+            self.tree.selection_set(item)
+            self.context_menu.post(event.x_root, event.y_root)
+
+    def marcar_dispositivo_manual(self, tipo):
+        """Marca el dispositivo seleccionado como Switch o Router."""
+        selected_item = self.tree.selection()
+        if not selected_item: return
+        
+        item_values = self.tree.item(selected_item[0], "values")
+        ip = item_values[1] # Asumiendo que IP es la columna 1
+        
+        self.topology_manager.set_device_type(ip, tipo)
+        tk.messagebox.showinfo("Topología", f"Dispositivo {ip} marcado como {tipo}. Actualiza el mapa para ver cambios.")
+
+    def conectar_dispositivo_manual(self):
+        """Abre un diálogo para conectar el dispositivo a otro (uplink)."""
+        selected_item = self.tree.selection()
+        if not selected_item: return
+        
+        item_values = self.tree.item(selected_item[0], "values")
+        child_ip = item_values[1]
+        
+        # Pedir IP del padre
+        parent_ip = simpledialog.askstring("Conectar a...", f"Ingresa la IP del Switch/Router al que se conecta {child_ip}:")
+        
+        if parent_ip:
+            # Validar IP básica
+            try:
+                ipaddress.ip_address(parent_ip)
+                self.topology_manager.set_uplink(child_ip, parent_ip)
+                tk.messagebox.showinfo("Topología", f"Conexión guardada: {child_ip} -> {parent_ip}.\nActualiza el mapa para ver cambios.")
+            except ValueError:
+                tk.messagebox.showerror("Error", "IP inválida.")
+
+    def quitar_conexion_manual(self):
+        """Elimina la conexión manual (uplink) del dispositivo seleccionado."""
+        selected_item = self.tree.selection()
+        if not selected_item: return
+        
+        item_values = self.tree.item(selected_item[0], "values")
+        ip = item_values[1]
+        
+        self.topology_manager.remove_uplink(ip)
+        tk.messagebox.showinfo("Topología", f"Conexión manual eliminada para {ip}.")
+
+    def restablecer_tipo_manual(self):
+        """Restablece el tipo de dispositivo a su valor por defecto."""
+        selected_item = self.tree.selection()
+        if not selected_item: return
+        
+        item_values = self.tree.item(selected_item[0], "values")
+        ip = item_values[1]
+        
+        self.topology_manager.reset_device_type(ip)
+        tk.messagebox.showinfo("Topología", f"Tipo de dispositivo restablecido para {ip}.")
+
+    def ver_mapa_red(self):
+        """Inicia la generación y visualización del mapa de red."""
+        # Verificar dependencias primero
+        if not topology_builder.DEPENDENCIES_INSTALLED:
+            self.actualizar_estado("Error: Faltan librerías (networkx, matplotlib, pysnmp).")
+            return
+
+        # Verificar si hay datos
+        if not self.device_history:
+            self.actualizar_estado("Error: No hay dispositivos para mapear. Escanea primero.")
+            return
+
+        self.map_button.configure(state="disabled", text="Generando...")
+        self.actualizar_estado("Analizando topología de red... esto puede tardar unos segundos.")
+        
+        # Ejecutar en hilo para no congelar GUI
+        threading.Thread(target=self._generar_topologia_thread, daemon=True).start()
+
+    def _generar_topologia_thread(self):
+        """Lógica de fondo para construir el grafo."""
+        try:
+            devices = list(self.device_history.values())
+            G = topology_builder.build_topology(devices)
+            self.after(0, self._mostrar_topologia_main_thread, G)
+        except Exception as e:
+            self.after(0, self.actualizar_estado, f"Error al generar topología: {e}")
+            self.after(0, self._restaurar_boton_mapa)
+
+    def _mostrar_topologia_main_thread(self, G):
+        """Genera y abre el mapa interactivo en el navegador."""
+        self._restaurar_boton_mapa()
+        if not G:
+            self.actualizar_estado("No se pudo generar el grafo.")
+            return
+
+        self.actualizar_estado("Generando mapa interactivo...")
+        
+        try:
+            # Generar HTML
+            output_path = topology_builder.generate_interactive_topology(G)
+            
+            if output_path and os.path.exists(output_path):
+                self.actualizar_estado(f"Mapa generado. Abriendo en navegador...")
+                # Abrir en navegador
+                webbrowser.open('file://' + output_path)
+                self.actualizar_estado(self.lang.obtener("status_ready"))
+            else:
+                self.actualizar_estado("Error al guardar el archivo del mapa.")
+
+        except Exception as e:
+            self.actualizar_estado(f"Error visualizando mapa: {e}")
+
+    def _restaurar_boton_mapa(self):
+        self.map_button.configure(state="normal", text=self.lang.obtener("map_button"))
+
     def restablecer_ui(self):
         """Restaura la UI a su estado inicial después de un escaneo."""
         self.scan_button.configure(state="normal", text=self.lang.obtener("scan_button"))
@@ -606,6 +718,7 @@ class App(ctk.CTk):
         self.entry_ip.configure(placeholder_text=self.lang.obtener("ip_range_placeholder"))
         self.scan_button.configure(text=self.lang.obtener("scan_button"))
         self.cancel_button.configure(text=self.lang.obtener("cancel_button"))
+        self.map_button.configure(text=self.lang.obtener("map_button"))
         self.search_label.configure(text=self.lang.obtener("search_label"))
         self.search_entry.configure(placeholder_text=self.lang.obtener("search_placeholder"))
         

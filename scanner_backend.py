@@ -8,6 +8,10 @@ import csv
 from pathlib import Path
 from scapy.all import ARP, Ether, srp, conf, IP, TCP, ICMP, sr1
 
+# Configuración de Scapy para Windows
+conf.use_pcap = True
+conf.verb = 0
+
 # --- Variables Globales ---
 # Usaremos nuestro propio diccionario para la base de datos de fabricantes MAC.
 # Se carga una vez al inicio en configurar_base_de_datos_mac().
